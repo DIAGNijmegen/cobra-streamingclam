@@ -137,7 +137,6 @@ def configure_streamingclam(options, streaming_options):
         "attention_only": options.attention_only,
         "unfreeze_at_epoch": options.unfreeze_streaming_layers_at_epoch,
         "learning_rate": options.learning_rate,
-        "additive": options.additive,
         "write_attention": True
     }
 
@@ -182,6 +181,7 @@ def get_options():
     options = TrainConfig()
     parser = options.configure_parser_with_options()
     args = parser.parse_args()
+    print(args)
     options.parser_to_options(vars(args))
 
     return options
@@ -205,23 +205,12 @@ if __name__ == "__main__":
     dm.setup(stage=options.mode)
 
     if options.mode == "fit":
-        wandb_logger = WandbLogger(
-            name=options.experiment_name,
-            project=options.wandb_project_name,
-            save_dir="/home/stephandooper",
-        )
 
-        trainer = configure_trainer(options, wandb_logger)
-
-        # log gradients, parameter histogram and model topology
-        if trainer.global_rank == 0:
-            print("at rank 0, logging wandb config")
-            wandb_logger.experiment.config.update(options.to_dict())
-
+        trainer = configure_trainer(options)
         last_checkpoint_path = configure_checkpoints()
-        # model.head = torch.compile(model.head)
-        # model.stream_network.stream_module = torch.compile(model.stream_network.stream_module)
-        # print(model.stream_network)
+        model.head = torch.compile(model.head)
+        model.stream_network.stream_module = torch.compile(model.stream_network.stream_module)
+        print(model.stream_network)
 
         trainer.fit(
             model=model,

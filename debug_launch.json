@@ -1,0 +1,44 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        
+        {
+            "name": "Python Debugger: Current File",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${file}",
+            "console": "integratedTerminal",
+            "args": [
+                "--image_path", "/data/temporary/ivan/DeepDerma/BCC_SCLAM/cobra-streamingclam/data_source/images",
+                "--mask_path", "/data/temporary/ivan/DeepDerma/BCC_SCLAM/cobra-streamingclam//data_source/images_tissue_masks",
+                "--fold", "0",
+                "--train_csv", "/data/temporary/ivan/DeepDerma/BCC_SCLAM/cobra-streamingclam/data_source/train.csv",
+                "--val_csv", "/data/temporary/ivan/DeepDerma/BCC_SCLAM/cobra-streamingclam/data_source/val.csv",
+                "--test_csv", "/data/temporary/ivan/DeepDerma/BCC_SCLAM/cobra-streamingclam/data_source/test.csv",
+                "--mode", "fit",
+                "--unfreeze_streaming_layers_at_epoch", "20",
+                "--num_epochs", "40",
+                "--strategy", "ddp_find_unused_parameters_true",
+                "--default_save_dir", "/data/pathology/projects/DeepDerma/BCC_SCLAM/debug/ckpt",
+                "--ckp_path", "",
+                "--grad_batches", "1",
+                "--num_gpus", "1",
+                "--precision", "bf16-mixed",
+                "--encoder", "resnet34",
+                "--branch", "sb",
+                "--pooling_layer", "avgpool",
+                "--pooling_kernel", "16",
+                "--num_classes", "2",
+                "--learning_rate", "1e-4",
+                "--tile_size", "10400",
+                "--tile_size_finetune", "6400",
+                "--image_size", "65536",
+                "--filetype", ".tif",
+                "--read_level", "1",
+                "--num_workers", "3"
+              ],
+              "justMyCode": false,
+              "purpose": ["debug-in-terminal"]
+        }
+    ]
+}

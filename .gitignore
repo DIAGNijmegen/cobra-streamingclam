@@ -1,3 +1,10 @@
 *.idea
 *.ipynb_checkpoints
 *.__pycache__
+.devcontainer/devcontainer.json
+Dockerfile
+LICENSE
+README.md
+streamingclam/data_splits/*
+data_source/*
+*.pyc
