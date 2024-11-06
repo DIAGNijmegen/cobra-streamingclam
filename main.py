@@ -65,7 +65,7 @@ def configure_callbacks(options):
 def configure_checkpoints():
     try:
         # Check for last checkpoint
-        last_checkpoint = list(Path(options.default_save_dir + f"/{options.experiment_name}/fold_{str(options.fold)}").glob("*last.ckpt"))
+        last_checkpoint = list(Path(options.default_save_dir + f"/{options.experiment_name}/fold_{str(options.fold)}/ckp").glob("*last.ckpt"))
         last_checkpoint_path = str(last_checkpoint[0])
     except IndexError:
         if options.resume:
