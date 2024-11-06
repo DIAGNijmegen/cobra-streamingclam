@@ -207,8 +207,8 @@ if __name__ == "__main__":
 
         trainer = configure_trainer(options)
         last_checkpoint_path = configure_checkpoints()
-        model.head = torch.compile(model.head)
-        model.stream_network.stream_module = torch.compile(model.stream_network.stream_module)
+        #model.head = torch.compile(model.head)
+        #model.stream_network.stream_module = torch.compile(model.stream_network.stream_module)
         print(model.stream_network)
 
         trainer.fit(
