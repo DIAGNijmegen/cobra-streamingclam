@@ -30,13 +30,17 @@ from streamingclam.utils.writers import AttentionWriter, TestPredictionWriter
 
 torch.set_float32_matmul_precision("medium")
 
+import warnings
+warnings.simplefilter(action='ignore', category=FutureWarning)
+
+
 
 def configure_callbacks(options):
     callbacks = []
     if options.mode == "fit":
         checkpoint_callback = ModelCheckpoint(
             dirpath=options.default_save_dir + f"/{options.experiment_name}/fold_{options.fold}/ckp",
-            monitor="val_loss",
+            monitor="val/loss",
             filename="streamingclam-{epoch:02d}-{val_loss:.2f}-{val_acc:.2f}",
             save_top_k=3,
             save_last=True,
@@ -48,7 +52,7 @@ def configure_callbacks(options):
             use_embeddings = options.use_embeddings,
             unfreeze_at_epoch = options.unfreeze_streaming_layers_at_epoch,
             embeddings_temp_dir = Path(options.embeddings_temp_dir),
-            export_to_remote_every = 200
+            export_to_remote_every = 200,
         )
 
         finetune_cb = FeatureExtractorFreezeUnfreeze(
@@ -58,8 +62,10 @@ def configure_callbacks(options):
         )
         memory_format_cb = MemoryFormat()
         print_cb = PrintingCallback(options)
-
-        callbacks = [checkpoint_callback, finetune_cb,embeddings_cb,memory_format_cb, print_cb]
+        if options.use_embeddings:
+            callbacks = [checkpoint_callback, finetune_cb,embeddings_cb,memory_format_cb, print_cb]
+        else:
+            callbacks = [checkpoint_callback, finetune_cb,embeddings_cb,memory_format_cb, print_cb]
     elif options.mode=="attention":
         writer_cb = AttentionWriter(Path(options.default_save_dir) / Path(f"{options.experiment_name}/attentions"),
                                     read_level=options.read_level,
@@ -78,7 +84,6 @@ def configure_checkpoints():
         if options.resume_epoch :
             checkpoint = list(Path(options.default_save_dir + f"/{options.experiment_name}/fold_{str(options.fold)}/ckp").glob(f"*{options.resume_epoch}-val_loss*.ckpt"))
             checkpoint_path = str(checkpoint[0])          
-            print(checkpoint_path)
         elif options.resume:
             checkpoint = list(Path(options.default_save_dir + f"/{options.experiment_name}/fold_{str(options.fold)}/ckp").glob("*last.ckpt"))
             checkpoint_path = str(checkpoint[0])
@@ -96,9 +101,9 @@ def configure_trainer(options, wandb_logger=None):
     callbacks = configure_callbacks(options)
     trainer = pl.Trainer(
         default_root_dir=options.default_save_dir,
-        accelerator="gpu",
+        accelerator="gpu" if options.num_gpus >0 else "cpu",
         max_epochs=options.num_epochs,
-        devices=options.num_gpus,
+        devices=max(1,options.num_gpus),
         accumulate_grad_batches=options.grad_batches,
         precision=options.precision,
         callbacks=callbacks,
@@ -188,7 +193,7 @@ def configure_datamodule(options):
         variable_input_shapes=options.variable_input_shapes,
         copy_to_gpu=options.copy_to_gpu,
         num_workers=options.num_workers,
-        transform=augmentations if (options.use_augmentations and options.mode == "fit") else None,
+        transform=augmentations if (not options.use_augmentations and options.mode == "fit") else None,
         output_dir=Path(options.default_save_dir) / Path(f"/{options.experiment_name}/attentions"),
         embeddings_source=Path(options.embeddings_temp_dir),
         load_embeddings=options.use_embeddings

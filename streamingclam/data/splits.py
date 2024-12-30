@@ -95,7 +95,8 @@ class StreamingCLAMDataModule(L.LightningDataModule):
                 load_embeddings = self.load_embeddings,
                 embeddings_source = self.embeddings_source
             )
-            self.sampler = weighted_sampler(self.train_dataset)
+            # self.sampler = weighted_sampler(self.train_dataset)
+            self.sampler = None
 
             self.val_dataset = StreamingClassificationDataset(
                 self.image_dir,

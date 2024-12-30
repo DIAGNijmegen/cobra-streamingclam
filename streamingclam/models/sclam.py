@@ -102,8 +102,6 @@ class StreamingCLAM(ImageNetClassifier):
         self.unfreeze_at_epoch = unfreeze_at_epoch
         self.learning_rate = learning_rate
         self.write_attention = write_attention
-        self.save_embeddings = False
-        self.embedding_computed = False
 
         if self.pooling_kernel < 0:
             raise ValueError(f"pooling_kernel must be non-negative, found {pooling_kernel}")
@@ -153,13 +151,16 @@ class StreamingCLAM(ImageNetClassifier):
                 **self.streaming_options,
             )
 
-        self.train_acc = Accuracy(task="binary", num_classes=n_classes)
+        self.train_acc = Accuracy(task="binary" if n_classes <=2 else "multiclass", num_classes=n_classes)
+        self.train_binacc = Accuracy(task="binary", num_classes=2)
         self.train_auc = AUROC(task="binary", num_classes=n_classes)
 
-        self.val_acc = Accuracy(task="binary", num_classes=n_classes)
+        self.val_acc = Accuracy(task="binary" if n_classes <=2 else "multiclass", num_classes=n_classes)
+        self.val_binacc = Accuracy(task="binary", num_classes=2)
         self.val_auc = AUROC(task="binary", num_classes=n_classes)
 
-        self.test_acc = Accuracy(task="binary", num_classes=n_classes)
+        self.test_acc = Accuracy(task="binary" if n_classes <=2 else "multiclass", num_classes=n_classes)
+        self.test_binacc = Accuracy(task="binary", num_classes=2)
         self.test_auc = AUROC(task="binary", num_classes=n_classes)
 
         self.test_outputs = []
@@ -272,12 +273,19 @@ class StreamingCLAM(ImageNetClassifier):
         """ ADD METRICS """
         loss = self.loss_fn(logits, label)
         probs = torch.nn.functional.softmax(logits, dim=1)
+        # handle non-binary probabilities
+        binary_probs = probs[:,1:].sum(dim=1)
         self.train_acc.update(torch.argmax(logits, dim=1).detach(), label.detach())
-        self.train_auc.update(probs[:, 1].detach(), label.detach())
+        self.train_auc.update(binary_probs.detach(), label.detach())
+        # For binary accuracy
+        binpred = (torch.argmax(logits, dim=1) >= 1) * 1  # Consider logits >= 1 as 1, otherwise 0
+        binlabel = (label >= 1) * 1 # Consider label >= 1 as 1, otherwise 0
+        self.train_binacc.update(binpred.detach(), binlabel.detach())
 
-        self.log("train_acc", self.train_acc, on_epoch=True, prog_bar=True, sync_dist=True)
-        self.log("train_auc", self.train_auc, on_epoch=True, prog_bar=True, sync_dist=True)
-        self.log("train_loss", loss.detach(), prog_bar=True, on_step=True, on_epoch=True, sync_dist=True)
+        self.log("train/acc", self.train_acc, on_epoch=True, prog_bar=True, sync_dist=True)
+        self.log("train/bacc", self.train_binacc, on_epoch=True, prog_bar=True, sync_dist=True)
+        self.log("train/auc", self.train_auc, on_epoch=True, prog_bar=True, sync_dist=True)
+        self.log("train/loss", loss.detach(), prog_bar=True, on_step=True, on_epoch=True, sync_dist=True)
         return loss
 
     def validation_step(self, batch, batch_idx):
@@ -285,31 +293,42 @@ class StreamingCLAM(ImageNetClassifier):
         del batch
 
         probs = torch.nn.functional.softmax(logits, dim=1)
-
+        # handle non-binary probabilities
+        binary_probs = probs[:,1:].sum(dim=1)
         self.val_acc.update(torch.argmax(logits, dim=1).detach(), label)
-        self.val_auc.update(probs[:, 1], label)
-
+        self.val_auc.update(binary_probs, label)
+        # For binary accuracy
+        binpred = (torch.argmax(logits, dim=1) >= 1) * 1  # Consider logits >= 1 as 1, otherwise 0
+        binlabel = (label >= 1) * 1 # Consider label >= 1 as 1, otherwise 0
+        self.val_binacc.update(binpred.detach(), binlabel.detach())
         # Should update and clear automatically, as per
         # https://torchmetrics.readthedocs.io/en/stable/pages/lightning.html
         # https: // lightning.ai / docs / pytorch / stable / extensions / logging.html
 
-        self.log("valid_acc", self.val_acc, on_epoch=True, prog_bar=True, sync_dist=True)
-        self.log("valid_auc", self.val_auc, on_epoch=True, prog_bar=True, sync_dist=True)
-        self.log("val_loss", loss, prog_bar=True, on_epoch=True, sync_dist=True)
+        self.log("val/acc", self.val_acc, on_epoch=True, prog_bar=True, sync_dist=True)
+        self.log("val/bacc", self.val_binacc, on_epoch=True, prog_bar=True, sync_dist=True)
+        self.log("val/auc", self.val_auc, on_epoch=True, prog_bar=True, sync_dist=True)
+        self.log("val/loss", loss, prog_bar=True, on_epoch=True, sync_dist=True)
         return loss
 
     def test_step(self, batch, batch_idx):
         loss, logits, label = self._shared_eval_step(batch, batch_idx)
 
         probs = torch.nn.functional.softmax(logits, dim=1)
-
+        # handle non-binary probabilities
+        binary_probs = probs[:,1:].sum(dim=1)
         self.test_acc(torch.argmax(logits, dim=1), label)
-        self.test_auc(probs[:, 1], label)
+        self.test_auc(binary_probs, label)
+        # For binary accuracy
+        binpred = (torch.argmax(logits, dim=1) >= 1) * 1  # Consider logits >= 1 as 1, otherwise 0
+        binlabel = (label >= 1) * 1 # Consider label >= 1 as 1, otherwise 0
+        self.test_binacc.update(binpred.detach(), binlabel.detach())
 
         metrics = {
-            "test_acc": self.test_acc,
-            "test_auc": self.test_auc,
-            "test_loss": loss,
+            "test/acc": self.test_acc,
+            "test/bacc": self.test_binacc,
+            "test/auc": self.test_auc,
+            "test/loss": loss,
         }
         self.log_dict(metrics, prog_bar=True)
 
@@ -317,7 +336,7 @@ class StreamingCLAM(ImageNetClassifier):
             {
                 "slide_name": batch["image_name"],
                 "loss": float(loss.detach().cpu().numpy()),
-                "probs": probs.detach().cpu().numpy().squeeze(),
+                "probs": binary_probs.detach().cpu().numpy().squeeze(),
                 "y_hat": float(torch.argmax(logits, dim=1).detach().cpu().numpy()),
                 "label": int(label.cpu().numpy()),
             }
@@ -356,9 +375,10 @@ class StreamingCLAM(ImageNetClassifier):
         if self.write_attention:
             image = batch["image"]
             image = image.to("cpu")
-            mask = batch["mask"] if "mask" in batch.keys() else None
-
-            logits, Y_prob, Y_hat, A_raw, instance_dict = self.forward(image, mask=mask)
+            self.mask = batch["mask"] if "mask" in batch.keys() else None
+            self.width = batch["width"]
+            is_embedding = torch.all(batch["is_embedding"])
+            logits, Y_prob, Y_hat, A_raw, instance_dict = self.forward(image, is_embedding, mask=self.mask)
 
             # Add to batch for write_on_batch_end
             batch.update({"A_raw": A_raw})

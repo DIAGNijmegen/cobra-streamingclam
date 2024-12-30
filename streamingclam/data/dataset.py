@@ -9,6 +9,7 @@ from torch.utils.data import Dataset
 import albumentationsxl as A
 import os 
 import numpy as np
+import time
 
 # A.OneOrOther(A.OneOf([A.Blur(), A.GaussianBlur(sigma_limit=7)]), A.Sharpen()),
 # A.RandomBrightnessContrast(brightness_limit=0.1, contrast_limit=0.1),
@@ -55,7 +56,6 @@ class StreamingClassificationDataset(Dataset):
 
         self.variable_input_shapes = variable_input_shapes
         self.transform = transform
-
         self.load_embeddings = load_embeddings
         self.embeddings_source = embeddings_source
 
@@ -64,8 +64,9 @@ class StreamingClassificationDataset(Dataset):
         else:
             self.classification_frame = csv_file
 
-        # if len(self.classification_frame) > 960:
-        #     self.classification_frame = self.classification_frame[self.classification_frame["slide"].isin(['train-432','train-431','train_433'])]
+        # """ for debugging only  """
+        # if "train" in str(csv_file):
+        #     self.classification_frame = self.classification_frame.iloc[:10]
 
         self.data_paths = {"images": [], "masks": [], "labels": []}
 
@@ -128,14 +129,30 @@ class StreamingClassificationDataset(Dataset):
         cache_path = self.embeddings_source / f"{Path(fname).stem}.pt"
         if os.path.exists(cache_path) and self.load_embeddings:
             # Load precomputed embedding
-            _in = torch.load(cache_path,weights_only=False,map_location='cpu')
+            try:
+                _in = torch.load(cache_path,weights_only=False,map_location='cpu')
+            except Exception as e:
+                print(cache_path, e)
+                os.remove(cache_path)
+                os.remove (f"/data/temporary/ivan/DeepDerma/BCC_SCLAM/final_embeddings/{Path(fname).stem}.pt")
+                self.load_embedding_or_image(fname)
             image = _in["embedding"]
             image_width = int(_in["width"])
             mask = _in["mask"]
             is_embedding = True
         else:
-            # Compute embedding
-            image = pyvips.Image.new_from_file(fname, page=self.read_level)
+            retry_count = 0
+            while retry_count < 5:
+                try:
+                    # Attempt to load the image
+                    image = pyvips.Image.new_from_file(fname, page=self.read_level)
+                    break
+                except pyvips.error.Error as e:
+                    retry_count += 1
+                    if retry_count > 5 :
+                        raise RuntimeError(f"Failed to load file {fname} after {self.max_retries} attempts.") from e
+                    time.sleep(1)  # Wait before retrying
+
             image_width = image.width
             is_embedding = False
             mask = None
@@ -144,9 +161,12 @@ class StreamingClassificationDataset(Dataset):
     def __getitem__(self, idx):
         sample, label, img_fname = self.get_img_pairs(idx)
         sample["image_name"] = Path(img_fname).stem
+
         if not sample["is_embedding"]:
-            if self.transform:
+            if self.transform and not self.load_embeddings:
                 sample = self.transform(**sample)
+                # print("transforming")
+            # print("=== use augmentations: ",(self.transform != None) ) check if augmentations are applied
 
             pad_to_tile_size = sample["image"].width < self.tile_size or sample["image"].height < self.tile_size
             # Get the resize op depending on image size
@@ -168,10 +188,15 @@ class StreamingClassificationDataset(Dataset):
                 hscale = new_width / sample["mask"].width
 
                 sample["mask"] = sample["mask"].resize(hscale, vscale=vscale, kernel="nearest")
-            
-            to_tensor = A.Compose([A.ToTensor(transpose_mask=True)], is_check_shapes=False)
-            sample = to_tensor(**sample)
-
+            try: 
+                to_tensor = A.Compose([A.ToTensor(transpose_mask=True)], is_check_shapes=False)
+                sample = to_tensor(**sample)
+            except Exception as e :
+                print("error: ",sample["image_name"], e)
+                sample["image"] = torch.full((512,512,3),0.5)
+                sample["mask"] = torch.full((512,512,1),1)
+             
+                
             # To ToTensor does not support cast to bool arrays yet, so do here
             if "mask" in sample.keys():
                 sample["mask"] = sample["mask"] >= 1
