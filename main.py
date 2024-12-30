@@ -205,6 +205,7 @@ def get_options():
     options = TrainConfig()
     parser = options.configure_parser_with_options()
     args = parser.parse_args()
+    print(args)
     options.parser_to_options(vars(args))
 
     return options
