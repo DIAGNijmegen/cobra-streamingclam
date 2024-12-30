@@ -10,6 +10,10 @@ def initialize_weights(m):
         torch.nn.init.xavier_normal_(m.weight)
         torch.nn.init.zeros_(m.bias)
 
+class Sum:
+    def pool(self, features: torch.Tensor, **kwargs) -> torch.Tensor:
+        return torch.sum(features, **kwargs)
+    
 
 """
 Attention Network without Gating (2 fc layers)
@@ -92,7 +96,7 @@ args:
 
 class CLAM_SB(nn.Module):
     def __init__(self, gate=True, size=[1024, 512, 256], dropout=False, k_sample=8, n_classes=2,
-                 instance_loss_fn=nn.CrossEntropyLoss(), subtyping=False):
+                 instance_loss_fn=nn.CrossEntropyLoss(), subtyping=False,additive=False):
         super(CLAM_SB, self).__init__()
 
         fc = [nn.Linear(size[0], size[1]), nn.ReLU()]
@@ -113,6 +117,8 @@ class CLAM_SB(nn.Module):
         self.subtyping = subtyping
 
         self.apply(initialize_weights)
+        # self.additive_function = Sum()
+        # self.additive = additive
 
     def relocate(self):
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -163,7 +169,7 @@ class CLAM_SB(nn.Module):
     def forward(self, h, label=None, instance_eval=False, return_features=False, attention_only=False):
         device = h.device
         A, h = self.attention_net(h)  # NxK
-        A = torch.transpose(A, 1, 0)  # KxN
+        A = torch.transpose(A, 1, 0)  # KxN 
         if attention_only:
             return A
         A_raw = A
@@ -196,10 +202,21 @@ class CLAM_SB(nn.Module):
             if self.subtyping:
                 total_inst_loss /= len(self.instance_classifiers)
 
-        M = torch.mm(A, h)
+
+        # if self.additive:
+        #     M = torch.mm(A.transpose(0, 1), h)  # Aggregate instance features (Additive MIL)
+        #     patch_logits = self.classifiers(M)  # Bag-level logits
+        #     logits = self.additive_function.pool(patch_logits,dim=1,keepdim=True)
+        # else:
+        #     M = torch.mm(A, h) #attention-pooled features
+        #     logits = self.classifiers(M)
+
+        M = torch.mm(A, h) #attention-pooled features
         logits = self.classifiers(M)
+
         Y_hat = torch.topk(logits, 1, dim=1)[1]
         Y_prob = F.softmax(logits, dim=1)
+
         if instance_eval:
             results_dict = {'instance_loss': total_inst_loss, 'inst_labels': np.array(all_targets),
                             'inst_preds': np.array(all_preds), 'inst_logits':np.array(all_logits)}
@@ -212,7 +229,7 @@ class CLAM_SB(nn.Module):
 
 class CLAM_MB(CLAM_SB):
     def __init__(self, gate=True, size=[1024, 512, 256], dropout=False, k_sample=8, n_classes=2,
-                 instance_loss_fn=nn.CrossEntropyLoss(), subtyping=False):
+                 instance_loss_fn=nn.CrossEntropyLoss(), subtyping=False,additive=False):
         nn.Module.__init__(self)
         fc = [nn.Linear(size[0], size[1]), nn.ReLU()]
         if dropout:
@@ -233,6 +250,8 @@ class CLAM_MB(CLAM_SB):
         self.n_classes = n_classes
         self.subtyping = subtyping
         self.apply(initialize_weights)
+        # self.additive_function = Sum()
+        # self.additive = additive
 
     def forward(self, h, label=None, instance_eval=False, return_features=False, attention_only=False):
         device = h.device
@@ -267,10 +286,23 @@ class CLAM_MB(CLAM_SB):
             if self.subtyping:
                 total_inst_loss /= len(self.instance_classifiers)
 
-        M = torch.mm(A, h)
         logits = torch.empty(1, self.n_classes).float().to(device)
+
+        # if self.additive:
+        #     for c in range(self.n_classes):
+        #         attended_features = torch.mm(A[:, c, :].unsqueeze(1).transpose(1,2), h)  # Aggregate instance features (Additive MIL)
+        #         patch_logits = self. self.classifiers[c](attended_features)
+        #         bag_logits = self.additive_function(patch_logits,dim=1,keepdim=True)
+        #         logits[0, c] = bag_logits
+        # else:
+        #     M = torch.mm(A, h)
+        #     for c in range(self.n_classes):
+        #         logits[0, c] = self.classifiers[c](M[c])
+
+        M = torch.mm(A, h)
         for c in range(self.n_classes):
             logits[0, c] = self.classifiers[c](M[c])
+
         Y_hat = torch.topk(logits, 1, dim=1)[1]
         Y_prob = F.softmax(logits, dim=1)
         if instance_eval:
