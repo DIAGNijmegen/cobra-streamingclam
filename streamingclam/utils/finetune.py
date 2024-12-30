@@ -47,14 +47,15 @@ class FeatureExtractorFreezeUnfreeze(BaseFinetuning):
     def finetune_function(self, pl_module, current_epoch, optimizer):
         # When `current_epoch` is self._unfreeze_at_epoch, feature_extractor will start training.
         # Check this for every epoch in case we are resuming after failure
-
+        initial_backbone_lr = (
+            self.backbone_initial_lr
+            if self.backbone_initial_lr is not None
+            else current_lr * self.backbone_initial_ratio_lr
+        )
+        
         if current_epoch == self._unfreeze_at_epoch:
             current_lr = optimizer.param_groups[0]["lr"]
-            initial_backbone_lr = (
-                self.backbone_initial_lr
-                if self.backbone_initial_lr is not None
-                else current_lr * self.backbone_initial_ratio_lr
-            )
+
             self.previous_backbone_lr = initial_backbone_lr
 
             if self.verbose:
