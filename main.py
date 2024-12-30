@@ -160,6 +160,7 @@ def configure_streamingclam(options, streaming_options):
         "unfreeze_at_epoch": options.unfreeze_streaming_layers_at_epoch,
         "learning_rate": options.learning_rate,
         "write_attention": True,
+        "additive": options.additive_mil
     }
 
     if options.mode == "fit":

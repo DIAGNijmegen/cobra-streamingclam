@@ -91,6 +91,7 @@ args:
     n_classes: number of classes 
     instance_loss_fn: loss function to supervise instance-level training
     subtyping: whether it's a subtyping problem
+    additive: whether to use additive MIL
 """
 
 
@@ -117,6 +118,7 @@ class CLAM_SB(nn.Module):
         self.subtyping = subtyping
 
         self.apply(initialize_weights)
+        # ADDITIVE MIL: 
         # self.additive_function = Sum()
         # self.additive = additive
 

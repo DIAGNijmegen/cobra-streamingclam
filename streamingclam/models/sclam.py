@@ -19,6 +19,7 @@ class CLAMConfig(torch.nn.Module):
         use_dropout: bool = False,
         k_sample: int = 8,
         instance_loss_fn: torch.nn = torch.nn.CrossEntropyLoss,
+        additive: bool = False,
         subtyping=False,
     ):
         self.branch = branch
@@ -32,6 +33,7 @@ class CLAMConfig(torch.nn.Module):
         self.n_classes = n_classes
         self.instance_loss_fn = instance_loss_fn
         self.subtyping = subtyping
+        self.additive = additive
 
     def configure_size(self):
         if self.encoder == "resnet50":
@@ -53,6 +55,8 @@ class CLAMConfig(torch.nn.Module):
                 n_classes=self.n_classes,
                 instance_loss_fn=self.instance_loss_fn(),
                 subtyping=self.subtyping,
+                additive=self.additive
+
             )
         elif self.branch == "mb":
             print("Loading CLAM with multiple branches \n")
@@ -64,6 +68,7 @@ class CLAMConfig(torch.nn.Module):
                 n_classes=self.n_classes,
                 instance_loss_fn=self.instance_loss_fn(),
                 subtyping=self.subtyping,
+                additive=self.additive
             )
         else:
             raise NotImplementedError(
@@ -91,6 +96,7 @@ class StreamingCLAM(ImageNetClassifier):
         unfreeze_at_epoch: int = 25,
         learning_rate: float = 2e-4,
         write_attention: bool = False,
+        additive: bool = False,
         **kwargs,
     ):
         self.stream_pooling_kernel = stream_pooling_kernel
@@ -114,7 +120,7 @@ class StreamingCLAM(ImageNetClassifier):
         if encoder in ("resnet18", "resnet34", "resnet50"):
             network = StreamingCLAM.model_choices[encoder](weights="IMAGENET1K_V1")
             stream_net, _ = split_resnet(network) #
-        head = CLAMConfig(encoder=encoder, branch=branch, n_classes=n_classes).configure_clam()
+        head = CLAMConfig(encoder=encoder, branch=branch, n_classes=n_classes,additive=additive).configure_clam()
         # At the end of the ResNet model, reduce the spatial dimensions with additional pooling layers
         self._get_streaming_options(**kwargs)
 

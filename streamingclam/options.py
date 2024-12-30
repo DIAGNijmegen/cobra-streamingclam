@@ -45,7 +45,8 @@ class TrainConfig:
     stream_pooling_kernel: bool = False
     learning_rate: float = 2e-4  # the learning rate when training the CLAM head,
                                  # the finetuning callback defined in finetuned.py will handle the optimizer for all layers
-
+    additive_mil : bool =  False # whether to use additive MIL 
+    
     # Streaming options
     tile_size: int = 3200  # The tile size on the gpu, as high as the gpu vram can handle (will not affect classification performance, only speed)
     tile_size_finetune: int = 3200  # Same as above, but should be lower since gradients of the entire model need to be kept in memory
