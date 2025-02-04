@@ -10,6 +10,7 @@ import albumentationsxl as A
 import os 
 import numpy as np
 import time
+import pickle as pl
 
 # A.OneOrOther(A.OneOf([A.Blur(), A.GaussianBlur(sigma_limit=7)]), A.Sharpen()),
 # A.RandomBrightnessContrast(brightness_limit=0.1, contrast_limit=0.1),
@@ -33,6 +34,7 @@ class StreamingClassificationDataset(Dataset):
         img_size: int,
         read_level: int,
         load_embeddings: bool,
+        streaming_embeddings : bool,
         embeddings_source : Path = Path("/home/embeddings"), 
         transform: A.BaseCompose | None = None,
         mask_dir: Path | str | None = None,
@@ -41,6 +43,7 @@ class StreamingClassificationDataset(Dataset):
         tile_stride: int | None = None,
         network_output_stride: int = 1,
         filetype=".tif",
+        embedding_extension = ".pt",
 
     ):
         self.img_dir = Path(img_dir)
@@ -58,6 +61,9 @@ class StreamingClassificationDataset(Dataset):
         self.transform = transform
         self.load_embeddings = load_embeddings
         self.embeddings_source = embeddings_source
+        self.embedding_extension = embedding_extension
+        self.streaming_embeddings = streaming_embeddings
+        self._pt_embeddings_dir = Path("/data/temporary/ivan/DeepDerma/BCC_SCLAM/final_embeddings")
 
         if not isinstance(csv_file, pd.DataFrame):
             self.classification_frame = pd.read_csv(csv_file)
@@ -84,10 +90,17 @@ class StreamingClassificationDataset(Dataset):
             images, label = self.get_img_path(i)  #
 
             # Files can be just images, but also image, mask
-            for file in images:
-                if not file.exists():
-                    print(f"WARNING {file} not found, excluded both image and mask (if present)!")
-                    continue
+            if not self.load_embeddings:
+                for file in images:
+                    if not file.exists():
+                        print(f"WARNING {file} not found, excluded both image and mask (if present)!")
+                        continue
+            if not self.load_embeddings:
+                for file in images:
+                    if not file.exists():
+                        print(f"WARNING {file} not found, excluded both image and mask (if present)!")
+                        continue
+
 
             included["images"].append(images[0])
             included["labels"].append(label)
@@ -109,16 +122,39 @@ class StreamingClassificationDataset(Dataset):
 
         return [img_path], label
 
+    def load_shared_resource(self,cache_path,dtype = "image"):
+        retry_count = 0
+        while retry_count < 5:
+            try:
+                # Attempt to load the image
+                if dtype == "image":
+                    return pyvips.Image.new_from_file(cache_path, page=self.read_level)
+                elif dtype == "pt":
+                    return torch.load(cache_path,weights_only=False,map_location='cpu')   
+                elif dtype == "npy":
+                    return np.load(cache_path) 
+                
+            except pyvips.error.Error as e:
+                retry_count += 1
+                time.sleep(0.8)  # Wait before retrying
+
+        raise RuntimeError(f"Failed to load file {cache_path} after 5 attempts.")
+                
+
     def get_img_pairs(self, idx):
         sample = {"image": None}
         img_fname = str(self.data_paths["images"][idx])
         label = int(self.data_paths["labels"][idx])
         image, image_width, mask, is_embedding = self.load_embedding_or_image(img_fname)
-        sample["width"] = image_width
-        sample["mask"] = mask
+        if not image_width is None:
+            sample["width"] = image_width
+        if not mask is None:
+            sample["mask"] = mask
+
         sample["is_embedding"] = is_embedding
         sample["image"] = image
-        if self.mask_dir and not is_embedding:
+
+        if self.mask_dir and (mask is None):
             mask_fname = str(self.data_paths["masks"][idx])
             mask = pyvips.Image.new_from_file(mask_fname)
             ratio = image_width / mask.width
@@ -126,47 +162,55 @@ class StreamingClassificationDataset(Dataset):
         return sample, label, img_fname
 
     def load_embedding_or_image(self,fname):
-        cache_path = self.embeddings_source / f"{Path(fname).stem}.pt"
+        cache_path = self.embeddings_source / f"{Path(fname).stem}{self.embedding_extension}"
+        is_embedding = False
         if os.path.exists(cache_path) and self.load_embeddings:
             # Load precomputed embedding
             try:
-                _in = torch.load(cache_path,weights_only=False,map_location='cpu')
+                if self.streaming_embeddings:
+                    _pt_embedding = self.load_shared_resource(cache_path,"pt")
+                    _pt_embedding = torch.load(cache_path,weights_only=False,map_location='cpu')    
+                    _in = _pt_embedding
+                    image = _in["embedding"]
+                    image_width = int(_in["width"])
+                    mask = _in["mask"]
+
+                else:
+                    # image_width = int(_pt_embedding["width"])
+                    image_width = None
+                    if self.mask_dir:
+                        _pt_embedding = self.load_shared_resource(f"{self._pt_embeddings_dir / (Path(fname).stem)}.pt","pt")    
+                        mask = _pt_embedding["mask"]
+                    else:
+                        mask = None
+                    if self.embedding_extension == ".pt":
+                        # image = torch.load(cache_path,weights_only=False,map_location='cpu')  
+                        image = self.load_shared_resource(cache_path, "pt")
+                    elif self.embedding_extension == ".npy":
+                        # _in = np.load(cache_path)
+                        _in = self.load_shared_resource(cache_path,"npy")
+                        image = torch.from_numpy(_in)
+
+                is_embedding = True
+            
             except Exception as e:
                 print(cache_path, e)
-                os.remove(cache_path)
-                os.remove (f"/data/temporary/ivan/DeepDerma/BCC_SCLAM/final_embeddings/{Path(fname).stem}.pt")
-                self.load_embedding_or_image(fname)
-            image = _in["embedding"]
-            image_width = int(_in["width"])
-            mask = _in["mask"]
-            is_embedding = True
-        else:
-            retry_count = 0
-            while retry_count < 5:
-                try:
-                    # Attempt to load the image
-                    image = pyvips.Image.new_from_file(fname, page=self.read_level)
-                    break
-                except pyvips.error.Error as e:
-                    retry_count += 1
-                    if retry_count > 5 :
-                        raise RuntimeError(f"Failed to load file {fname} after {self.max_retries} attempts.") from e
-                    time.sleep(1)  # Wait before retrying
 
+        if not is_embedding:
+            image = self.load_shared_resource(fname)
             image_width = image.width
-            is_embedding = False
             mask = None
+            
+        if not is_embedding:
+            print("no embedding for ", cache_path, fname, image_width)
         return image, image_width, mask, is_embedding
 
     def __getitem__(self, idx):
         sample, label, img_fname = self.get_img_pairs(idx)
         sample["image_name"] = Path(img_fname).stem
-
         if not sample["is_embedding"]:
             if self.transform and not self.load_embeddings:
                 sample = self.transform(**sample)
-                # print("transforming")
-            # print("=== use augmentations: ",(self.transform != None) ) check if augmentations are applied
 
             pad_to_tile_size = sample["image"].width < self.tile_size or sample["image"].height < self.tile_size
             # Get the resize op depending on image size

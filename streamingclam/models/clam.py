@@ -119,8 +119,8 @@ class CLAM_SB(nn.Module):
 
         self.apply(initialize_weights)
         # ADDITIVE MIL: 
-        # self.additive_function = Sum()
-        # self.additive = additive
+        self.additive_function = Sum()
+        self.additive = additive
 
     def relocate(self):
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -204,17 +204,18 @@ class CLAM_SB(nn.Module):
             if self.subtyping:
                 total_inst_loss /= len(self.instance_classifiers)
 
+        # ADDITIVE MIL : 
+        if self.additive:
+            M = torch.mm(A.transpose(0, 1), h)  # Aggregate instance features (Additive MIL)
+            patch_logits = self.classifiers(M)  # Bag-level logits
+            logits = self.additive_function.pool(patch_logits,dim=1,keepdim=True).to(device)
+        else:
+            M = torch.mm(A, h) #attention-pooled features
+            logits = self.classifiers(M).to(device)
 
-        # if self.additive:
-        #     M = torch.mm(A.transpose(0, 1), h)  # Aggregate instance features (Additive MIL)
-        #     patch_logits = self.classifiers(M)  # Bag-level logits
-        #     logits = self.additive_function.pool(patch_logits,dim=1,keepdim=True)
-        # else:
-        #     M = torch.mm(A, h) #attention-pooled features
-        #     logits = self.classifiers(M)
-
-        M = torch.mm(A, h) #attention-pooled features
-        logits = self.classifiers(M)
+        # without additive MIL implemented
+        # M = torch.mm(A, h) #attention-pooled features
+        # logits = self.classifiers(M)
 
         Y_hat = torch.topk(logits, 1, dim=1)[1]
         Y_prob = F.softmax(logits, dim=1)
@@ -252,8 +253,9 @@ class CLAM_MB(CLAM_SB):
         self.n_classes = n_classes
         self.subtyping = subtyping
         self.apply(initialize_weights)
-        # self.additive_function = Sum()
-        # self.additive = additive
+        # ADDITIVE MIL: 
+        self.additive_function = Sum()
+        self.additive = additive
 
     def forward(self, h, label=None, instance_eval=False, return_features=False, attention_only=False):
         device = h.device
@@ -276,6 +278,7 @@ class CLAM_MB(CLAM_SB):
                     instance_loss, preds, targets = self.inst_eval(A[i], h, classifier)
                     all_preds.extend(preds.cpu().numpy())
                     all_targets.extend(targets.cpu().numpy())
+                    
                 else:  # out-of-the-class
                     if self.subtyping:
                         instance_loss, preds, targets = self.inst_eval_out(A[i], h, classifier)
@@ -290,26 +293,166 @@ class CLAM_MB(CLAM_SB):
 
         logits = torch.empty(1, self.n_classes).float().to(device)
 
-        # if self.additive:
-        #     for c in range(self.n_classes):
-        #         attended_features = torch.mm(A[:, c, :].unsqueeze(1).transpose(1,2), h)  # Aggregate instance features (Additive MIL)
-        #         patch_logits = self. self.classifiers[c](attended_features)
-        #         bag_logits = self.additive_function(patch_logits,dim=1,keepdim=True)
-        #         logits[0, c] = bag_logits
-        # else:
-        #     M = torch.mm(A, h)
-        #     for c in range(self.n_classes):
-        #         logits[0, c] = self.classifiers[c](M[c])
+        # ADDITIVE MIL: 
 
-        M = torch.mm(A, h)
-        for c in range(self.n_classes):
-            logits[0, c] = self.classifiers[c](M[c])
+        if self.additive:
+            for c in range(self.n_classes):
+                attended_features = torch.mm(A[c, :], h)  # Aggregate instance features (Additive MIL)
+                patch_logits = self.classifiers[c](attended_features)
+                bag_logits = self.additive_function(patch_logits,dim=1,keepdim=True)
+                logits[0, c] = bag_logits
+        else:
+            M = torch.mm(A, h)
+            for c in range(self.n_classes):
+                logits[0, c] = self.classifiers[c](M[c])
+
+        # without additive MIL implemented
+        # M = torch.mm(A, h)
+        # for c in range(self.n_classes):
+        #     logits[0, c] = self.classifiers[c](M[c])
 
         Y_hat = torch.topk(logits, 1, dim=1)[1]
         Y_prob = F.softmax(logits, dim=1)
         if instance_eval:
             results_dict = {'instance_loss': total_inst_loss, 'inst_labels': np.array(all_targets),
                             'inst_preds': np.array(all_preds)}
+        else:
+            results_dict = {}
+        if return_features:
+            results_dict.update({'features': M})
+        return logits, Y_prob, Y_hat, A_raw, results_dict
+
+
+
+    
+class CLAM_SB_WSI(nn.Module):
+    def __init__(self, gate=True, size=[1024, 512, 256], dropout=False, k_sample=8, n_classes=2,
+                 instance_loss_fn=nn.CrossEntropyLoss(), subtyping=False,additive=False):
+        super(CLAM_SB, self).__init__()
+
+        fc = [nn.Linear(size[0], size[1]), nn.ReLU()]
+        if dropout:
+            fc.append(nn.Dropout(0.25))
+        if gate:
+            attention_net = Attn_Net_Gated(L=size[1], D=size[2], dropout=dropout, n_classes=1)
+        else:
+            attention_net = Attn_Net(L=size[1], D=size[2], dropout=dropout, n_classes=1)
+        fc.append(attention_net)
+        self.attention_net = nn.Sequential(*fc)
+        self.classifiers = nn.Linear(size[1], n_classes)
+        instance_classifiers = [nn.Linear(size[1], 2) for i in range(n_classes)]
+        self.instance_classifiers = nn.ModuleList(instance_classifiers)
+        self.k_sample = k_sample
+        self.instance_loss_fn = instance_loss_fn
+        self.n_classes = n_classes
+        self.subtyping = subtyping
+
+        self.apply(initialize_weights)
+        # ADDITIVE MIL: 
+        self.additive_function = Sum()
+        self.additive = additive
+
+    def relocate(self):
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.attention_net = self.attention_net.to(device)
+        self.classifiers = self.classifiers.to(device)
+        self.instance_classifiers = self.instance_classifiers.to(device)
+
+    @staticmethod
+    def create_positive_targets(length, device):
+        return torch.full((length,), 1, device=device).long()
+
+    @staticmethod
+    def create_negative_targets(length, device):
+        return torch.full((length,), 0, device=device).long()
+
+    # instance-level evaluation for in-the-class attention branch
+    def inst_eval(self, A, h, classifier):
+        device = h.device
+        if len(A.shape) == 1:
+            A = A.view(1, -1)
+        top_p_ids = torch.topk(A, self.k_sample)[1][-1]
+        top_p = torch.index_select(h, dim=0, index=top_p_ids)
+        top_n_ids = torch.topk(-A, self.k_sample, dim=1)[1][-1]
+        top_n = torch.index_select(h, dim=0, index=top_n_ids)
+        p_targets = self.create_positive_targets(self.k_sample, device)
+        n_targets = self.create_negative_targets(self.k_sample, device)
+
+        all_targets = torch.cat([p_targets, n_targets], dim=0)
+        all_instances = torch.cat([top_p, top_n], dim=0)
+        logits = classifier(all_instances)
+        all_preds = torch.topk(logits, 1, dim=1)[1].squeeze(1)
+        instance_loss = self.instance_loss_fn(logits, all_targets)
+        return instance_loss, all_preds, all_targets, logits
+
+    # instance-level evaluation for out-of-the-class attention branch
+    def inst_eval_out(self, A, h, classifier):
+        device = h.device
+        if len(A.shape) == 1:
+            A = A.view(1, -1)
+        top_p_ids = torch.topk(A, self.k_sample)[1][-1]
+        top_p = torch.index_select(h, dim=0, index=top_p_ids)
+        p_targets = self.create_negative_targets(self.k_sample, device)
+        logits = classifier(top_p)
+        p_preds = torch.topk(logits, 1, dim=1)[1].squeeze(1)
+        instance_loss = self.instance_loss_fn(logits, p_targets)
+        return instance_loss, p_preds, p_targets, logits
+
+    def forward(self, h, label=None, instance_eval=False, return_features=False, attention_only=False):
+        device = h.device
+        A, h = self.attention_net(h)  # NxK
+        A = torch.transpose(A, 1, 0)  # KxN 
+        if attention_only:
+            return A
+        A_raw = A
+        A = F.softmax(A, dim=1)  # softmax over N
+
+        if instance_eval:
+            total_inst_loss = 0.0
+            all_preds = []
+            all_targets = []
+            all_logits = []
+            inst_labels = F.one_hot(label, num_classes=self.n_classes).squeeze()  # binarize label
+            for i in range(len(self.instance_classifiers)):
+                inst_label = inst_labels[i].item()
+                classifier = self.instance_classifiers[i]
+                if inst_label == 1:  # in-the-class:
+                    instance_loss, preds, targets, inst_logits = self.inst_eval(A, h, classifier)
+                    all_preds.extend(preds.cpu().numpy())
+                    all_targets.extend(targets.cpu().numpy())
+                    all_logits.extend(inst_logits.detach().cpu().numpy())
+                else:  # out-of-the-class
+                    if self.subtyping:
+                        instance_loss, preds, targets, inst_logits = self.inst_eval_out(A, h, classifier)
+                        all_preds.extend(preds.cpu().numpy())
+                        all_targets.extend(targets.cpu().numpy())
+                        all_logits.extend(inst_logits.detach().cpu().numpy())
+                    else:
+                        continue
+                total_inst_loss += instance_loss
+
+            if self.subtyping:
+                total_inst_loss /= len(self.instance_classifiers)
+
+        # ADDITIVE MIL : 
+        if self.additive:
+            M = torch.mm(A.transpose(0, 1), h)  # Aggregate instance features (Additive MIL)
+            patch_logits = self.classifiers(M)  # Bag-level logits
+            logits = self.additive_function.pool(patch_logits,dim=1,keepdim=True).to(device)
+        else:
+            M = torch.mm(A, h) #attention-pooled features
+            logits = self.classifiers(M).to(device)
+
+        # without additive MIL implemented
+        # M = torch.mm(A, h) #attention-pooled features
+        # logits = self.classifiers(M)
+
+        Y_hat = torch.topk(logits, 1, dim=1)[1]
+        Y_prob = F.softmax(logits, dim=1)
+
+        if instance_eval:
+            results_dict = {'instance_loss': total_inst_loss, 'inst_labels': np.array(all_targets),
+                            'inst_preds': np.array(all_preds), 'inst_logits':np.array(all_logits)}
         else:
             results_dict = {}
         if return_features:

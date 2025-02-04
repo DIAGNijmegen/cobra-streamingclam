@@ -20,6 +20,7 @@ class StreamingCLAMDataModule(L.LightningDataModule):
         tile_stride: int,
         network_output_stride: int,
         embeddings_source : Path, 
+        streaming_embeddings : bool,
         load_embeddings: bool = False,
         train_csv_path: str | Path | None = None,
         val_csv_path: str | Path | None = None,
@@ -34,7 +35,8 @@ class StreamingCLAMDataModule(L.LightningDataModule):
         transform: A.BaseCompose | None = None,
         verbose: bool = True,
         filetype: str = ".tif",
-        output_dir: Path | str | None = None
+        output_dir: Path | str | None = None,
+        embedding_extension = ".pt"
     ):
         super().__init__()
         self.image_dir = image_dir
@@ -59,6 +61,8 @@ class StreamingCLAMDataModule(L.LightningDataModule):
         self.transform = transform
         self.verbose = verbose
         self.filetype = filetype
+        self.embedding_extension = embedding_extension
+        self.streaming_embeddings = streaming_embeddings
 
         self.load_embeddings = load_embeddings
         self.embeddings_source = embeddings_source
@@ -93,7 +97,9 @@ class StreamingCLAMDataModule(L.LightningDataModule):
                 network_output_stride=self.network_output_stride,
                 filetype=self.filetype,
                 load_embeddings = self.load_embeddings,
-                embeddings_source = self.embeddings_source
+                embeddings_source = self.embeddings_source,
+                embedding_extension = self.embedding_extension,
+                streaming_embeddings = self.streaming_embeddings
             )
             # self.sampler = weighted_sampler(self.train_dataset)
             self.sampler = None
@@ -112,7 +118,9 @@ class StreamingCLAMDataModule(L.LightningDataModule):
                 network_output_stride=self.network_output_stride,
                 filetype=self.filetype,
                 load_embeddings = self.load_embeddings,
-                embeddings_source = self.embeddings_source
+                embeddings_source = self.embeddings_source,
+                embedding_extension = self.embedding_extension,
+                streaming_embeddings = self.streaming_embeddings
             )
 
         if stage == "test":
@@ -130,7 +138,9 @@ class StreamingCLAMDataModule(L.LightningDataModule):
                 network_output_stride=self.network_output_stride,
                 filetype=self.filetype,
                 load_embeddings = self.load_embeddings,
-                embeddings_source = self.embeddings_source
+                embeddings_source = self.embeddings_source,
+                embedding_extension = self.embedding_extension,
+                streaming_embeddings = self.streaming_embeddings
             )
         if stage == "predict":
             pass

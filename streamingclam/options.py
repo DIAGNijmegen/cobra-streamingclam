@@ -10,8 +10,8 @@ import argparse
 class TrainConfig:
     experiment_name: str = "sclam_cobra"  # checkpoints, attention maps, outputs are stored under this experiment name within default_save_dir
     wandb_project_name: str = "sclam_cobra"
-    image_path: str = "./test_images"
-    mask_path: str = "./test_images"
+    image_path: str = ""
+    mask_path: str = ""
     fold: int = 0
     train_csv: str = "train.csv"
     val_csv: str = "val.csv"
@@ -56,10 +56,13 @@ class TrainConfig:
     normalize_on_gpu: bool = True
     copy_to_gpu: bool = False  # Whether to copy the entire image to the gpu. Recommended False if image > 16000x16000
 
-    use_embeddings : bool = False
+    load_embeddings : bool = False
+    save_embeddings : bool = False
     embeddings_source : str = "/data/temporary/ivan/DeepDerma/BCC_SCLAM/embeddings"
     embeddings_temp_dir : str = "/home/embeddings" # can be the same as embeddings_source
-
+    embedding_extension : str = ".pt"
+    streaming_embeddings : bool = False # whether to use embeddings extracted from streaming, instead of embeddings from an encoder
+    
     # Dataloader options
     image_size: int = 65536  # represents image size if variable_input_shape=False, else the maximum image size
     variable_input_shapes: bool = True

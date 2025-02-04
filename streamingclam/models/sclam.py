@@ -40,9 +40,13 @@ class CLAMConfig(torch.nn.Module):
             return [2048, 512, 256]
         elif self.encoder == "resnet39":
             return [1024, 512, 256]
-        elif self.encoder in ("resnet18", "resnet34"):
+        elif self.encoder in ("resnet18", "resnet34","conch"):
             return [512, 512, 256]
-
+        elif self.encoder == "uni":
+            return [1024, 512, 256]
+        elif self.encoder in ("conchv1". "titan"):
+            return [768, 512, 256]
+        
     def configure_clam(self):
         # size args original: self.size_dict = {"small": [1024, 512, 256], "big": [1024, 512, 384]}
         if self.branch == "sb":
@@ -70,6 +74,31 @@ class CLAMConfig(torch.nn.Module):
                 subtyping=self.subtyping,
                 additive=self.additive
             )
+        elif self.branch == "mb_wsi":
+            print("Loading CLAM WSI with multiple branches \n")
+            return CLAM_MB_WSI(
+                gate=self.gate,
+                size=self.size,
+                dropout=self.use_dropout,
+                k_sample=self.k_sample,
+                n_classes=self.n_classes,
+                instance_loss_fn=self.instance_loss_fn(),
+                subtyping=self.subtyping,
+                additive=self.additive
+            )
+        elif self.branch == "sb_wsi":
+            print("Loading CLAM WSI with one branch \n")
+            return CLAM_SB(
+                gate=self.gate,
+                size=self.size,
+                dropout=self.use_dropout,
+                k_sample=self.k_sample,
+                n_classes=self.n_classes,
+                instance_loss_fn=self.instance_loss_fn(),
+                subtyping=self.subtyping,
+                additive=self.additive
+
+            )
         else:
             raise NotImplementedError(
                 f"branch must be specified as single-branch " f"'sb' or multi-branch 'mb', not {self.branch}"
@@ -77,7 +106,7 @@ class CLAMConfig(torch.nn.Module):
 
 
 class StreamingCLAM(ImageNetClassifier):
-    model_choices = {"resnet18": resnet18, "resnet34": resnet34, "resnet50": resnet50}
+    model_choices = {"resnet18": resnet18, "resnet34": resnet34, "resnet50": resnet50,"conch": resnet34,"uni": resnet34,"titan": resnet34,"conchv1":resnet34}
 
     def __init__(
         self,
@@ -107,8 +136,10 @@ class StreamingCLAM(ImageNetClassifier):
         self.attention_only = attention_only
         self.unfreeze_at_epoch = unfreeze_at_epoch
         self.learning_rate = learning_rate
+        print("lr attribute: ", self.learning_rate)
         self.write_attention = write_attention
-
+        self.encoder = encoder
+        
         if self.pooling_kernel < 0:
             raise ValueError(f"pooling_kernel must be non-negative, found {pooling_kernel}")
         if self.stream_pooling_kernel and self.pooling_kernel == 0:
@@ -117,7 +148,7 @@ class StreamingCLAM(ImageNetClassifier):
         assert encoder in list(StreamingCLAM.model_choices.keys())
 
         # Define the streaming network and head
-        if encoder in ("resnet18", "resnet34", "resnet50"):
+        if encoder in ("resnet18", "resnet34", "resnet50","conch","uni","titan","conchv1"):
             network = StreamingCLAM.model_choices[encoder](weights="IMAGENET1K_V1")
             stream_net, _ = split_resnet(network) #
         head = CLAMConfig(encoder=encoder, branch=branch, n_classes=n_classes,additive=additive).configure_clam()
@@ -202,21 +233,31 @@ class StreamingCLAM(ImageNetClassifier):
         return_features=False,
         attention_only=False,
     ):
-        batch_size, num_features, h, w = fmap.shape
+        try: 
+            batch_size, num_features, h, w = fmap.shape
 
-        if self.ds_blocks is not None:
-            fmap = self.ds_blocks(fmap)
+            if self.ds_blocks is not None:
+                fmap = self.ds_blocks(fmap)
 
-        # Mask background, can heavily reduce inputs to clam network
-        if mask is not None:
-            fmap = torch.masked_select(fmap, mask)
-            del mask
+            # Mask background, can heavily reduce inputs to clam network
+            if mask is not None:
+                print("masking background")
+                fmap = torch.masked_select(fmap, mask)
+                del mask
 
-        # Put everything back together into an array [channels, #unmasked_pixels]
-        # Change dimensions from [batch_size, C, H, W] to [batch_size, C, H * W]
-        fmap = torch.reshape(fmap, (num_features, -1)).transpose(0, 1)
+            # Put everything back together into an array [channels, #unmasked_pixels]
+            # Change dimensions from [batch_size, C(feat_size). H, W] to [C(feat_size), H * W] to  [H * W, C(feat_size)] 
+            fmap = torch.reshape(fmap, (num_features, -1)).transpose(0, 1)
 
-        if self.attention_only:
+        except ValueError:
+            if len (fmap.shape) ==  3:
+                batch_size, _ , num_features = fmap.shape
+                fmap  = torch.squeeze(fmap,0)  # Change dimensions from [batch_size, num_embs (patches), C(feat_size)] to [num_embs (patches),C(feat_size)]
+            else:
+                batch_size, _ = fmap.shape  # Keeps dimensions from [batch_size, C(feat_size)] tas [1,C(feat_size)]
+                instance_eval = False
+
+        if self.attention_only: 
             return self.head(
                 fmap,
                 label=None,
@@ -234,9 +275,10 @@ class StreamingCLAM(ImageNetClassifier):
 
         return logits, Y_prob, Y_hat, A_raw, instance_dict
 
-    def forward(self, image, is_embedding, mask=None):
-        fmap = self.get_embedding(image,is_embedding,mask.device)
+    def forward(self, image, is_embedding, mask=None, device=None):
+        fmap = self.get_embedding(image,is_embedding,device)
         self.str_output = fmap
+        # print("embedding: ", self.str_output.shape)
         out = self.forward_head(
             fmap,
             mask=mask,
@@ -261,11 +303,10 @@ class StreamingCLAM(ImageNetClassifier):
         image = batch["image"]
         image = image.to("cpu")
         self.mask = batch["mask"] if "mask" in batch.keys() else None
-        self.width = batch["width"]
+        self.width = batch["width"] if "width" in batch.keys() else None
         label = batch["label"]
         is_embedding = torch.all(batch["is_embedding"])
-        
-        self.str_output = self.get_embedding(image, is_embedding,self.mask.device)
+        self.str_output = self.get_embedding(image, is_embedding,label.device)
         self.str_output.requires_grad = self.training
 
         logits, Y_prob, Y_hat, A_raw, instance_dict = self.forward_head(
@@ -276,6 +317,7 @@ class StreamingCLAM(ImageNetClassifier):
             return_features=self.return_features,
             attention_only=self.attention_only,
         )
+
         """ ADD METRICS """
         loss = self.loss_fn(logits, label)
         probs = torch.nn.functional.softmax(logits, dim=1)
@@ -353,11 +395,11 @@ class StreamingCLAM(ImageNetClassifier):
         image = batch["image"]
         image = image.to("cpu")
         self.mask = batch["mask"] if "mask" in batch.keys() else None
-        self.width = batch["width"]
+        self.width = batch["width"] if "width" in batch.keys() else None
         label = batch["label"]
         is_embedding = torch.all(batch["is_embedding"])
 
-        logits, Y_prob, Y_hat, A_raw, instance_dict = self.forward(image, is_embedding, mask=self.mask)
+        logits, Y_prob, Y_hat, A_raw, instance_dict = self.forward(image, is_embedding, mask=self.mask,device=label.device)
         loss = self.loss_fn(logits, label)
         return loss, logits.detach(), label.detach()
 
@@ -382,9 +424,10 @@ class StreamingCLAM(ImageNetClassifier):
             image = batch["image"]
             image = image.to("cpu")
             self.mask = batch["mask"] if "mask" in batch.keys() else None
-            self.width = batch["width"]
+            self.width = batch["width"] if "width" in batch.keys() else None
             is_embedding = torch.all(batch["is_embedding"])
-            logits, Y_prob, Y_hat, A_raw, instance_dict = self.forward(image, is_embedding, mask=self.mask)
+
+            logits, Y_prob, Y_hat, A_raw, instance_dict = self.forward(image, is_embedding, mask=self.mask,device=image.device)
 
             # Add to batch for write_on_batch_end
             batch.update({"A_raw": A_raw})
@@ -398,9 +441,10 @@ class StreamingCLAM(ImageNetClassifier):
 
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.params, lr=self.learning_rate, weight_decay=1e-5)
+        print("lr attribute: ", self.learning_rate)
 
         def lr_lambda(epoch):
-            if epoch < self.train_streaming_layers:
+            if epoch < self.unfreeze_at_epoch:
                 return 1
             else:
                 # halve the learning rate when switching to training all layers
@@ -410,6 +454,7 @@ class StreamingCLAM(ImageNetClassifier):
             "scheduler": torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda),
             "name": "lr_scheduler",
         }
+        print(lr_scheduler)
 
         return [optimizer], [lr_scheduler]
 

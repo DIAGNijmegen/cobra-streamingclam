@@ -14,7 +14,7 @@ from pathlib import Path
 from tqdm import tqdm 
 
 import lightning.pytorch as pl
-from lightning.pytorch.callbacks import ModelCheckpoint
+from lightning.pytorch.callbacks import ModelCheckpoint, LearningRateMonitor
 from lightning.pytorch.loggers import WandbLogger
 from lightning.pytorch.loggers import TensorBoardLogger
 
@@ -33,8 +33,6 @@ torch.set_float32_matmul_precision("medium")
 import warnings
 warnings.simplefilter(action='ignore', category=FutureWarning)
 
-
-
 def configure_callbacks(options):
     callbacks = []
     if options.mode == "fit":
@@ -47,9 +45,12 @@ def configure_callbacks(options):
             mode="min",
             verbose=True,
         )
+        lr_monitor = LearningRateMonitor(logging_interval='epoch')
+
         embeddings_cb = IntermediateEmbeddings(
             embeddings_source = Path(options.embeddings_source),
-            use_embeddings = options.use_embeddings,
+            load_embeddings = options.load_embeddings,
+            save_embeddings = options.save_embeddings,
             unfreeze_at_epoch = options.unfreeze_streaming_layers_at_epoch,
             embeddings_temp_dir = Path(options.embeddings_temp_dir),
             export_to_remote_every = 200,
@@ -59,13 +60,14 @@ def configure_callbacks(options):
             options.unfreeze_streaming_layers_at_epoch,
             tile_size_finetune=options.tile_size_finetune,
             lambda_func=lambda epoch: 5,
+            verbose = True
         )
         memory_format_cb = MemoryFormat()
         print_cb = PrintingCallback(options)
-        if options.use_embeddings:
-            callbacks = [checkpoint_callback, finetune_cb,embeddings_cb,memory_format_cb, print_cb]
+        if options.save_embeddings or options.load_embeddings:
+            callbacks = [checkpoint_callback, lr_monitor, finetune_cb,embeddings_cb,memory_format_cb, print_cb]
         else:
-            callbacks = [checkpoint_callback, finetune_cb,embeddings_cb,memory_format_cb, print_cb]
+            callbacks = [checkpoint_callback, lr_monitor, finetune_cb,embeddings_cb,memory_format_cb, print_cb]
     elif options.mode=="attention":
         writer_cb = AttentionWriter(Path(options.default_save_dir) / Path(f"{options.experiment_name}/attentions"),
                                     read_level=options.read_level,
@@ -188,7 +190,7 @@ def configure_datamodule(options):
         val_csv_path=options.val_csv,
         test_csv_path=options.test_csv,
         attention_csv_path=options.attention_csv,
-        tissue_mask_dir=options.mask_path,
+        tissue_mask_dir=options.mask_path if len(options.mask_path) > 0 else None,
         mask_suffix=options.mask_suffix,
         image_size=options.image_size,
         variable_input_shapes=options.variable_input_shapes,
@@ -197,7 +199,9 @@ def configure_datamodule(options):
         transform=augmentations if (not options.use_augmentations and options.mode == "fit") else None,
         output_dir=Path(options.default_save_dir) / Path(f"/{options.experiment_name}/attentions"),
         embeddings_source=Path(options.embeddings_temp_dir),
-        load_embeddings=options.use_embeddings
+        load_embeddings=options.load_embeddings,
+        streaming_embeddings = options.streaming_embeddings,
+        embedding_extension = options.embedding_extension
     )
 
 

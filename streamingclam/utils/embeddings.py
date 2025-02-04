@@ -15,15 +15,16 @@ class IntermediateEmbeddings(BasePredictionWriter):
     def __init__(
         self,
         embeddings_source: Path,
-        use_embeddings: bool = False,
+        load_embeddings: bool = False,
+        save_embeddings: bool = False,
         unfreeze_at_epoch : int = 10,
         embeddings_temp_dir : Path = Path("/home/embeddings"),
         export_to_remote_every : int = 50,
     ):
         super().__init__()
         self.embeddings_source = embeddings_source
-        self.use_embeddings = use_embeddings
-        self.save_embeddings = self.use_embeddings
+        self.load_embeddings = load_embeddings
+        self.save_embeddings = save_embeddings
         self.unfreeze_at_epoch = unfreeze_at_epoch
         self.embeddings_temp_dir = embeddings_temp_dir
         self.export_to_remote_every = export_to_remote_every
@@ -74,22 +75,26 @@ class IntermediateEmbeddings(BasePredictionWriter):
 
         del _out
 
-    # def on_fit_start(self,trainer,pl_module): fails to load the current epoch from the checkpoint
+    def on_fit_start(self,trainer,pl_module): # fails to load the current epoch from the checkpoint
+        self.old_save_embeddings = self.save_embeddings
+        self.save_embeddings = False
+
     def on_train_start(self,trainer,pl_module):
         # if unfreeze at epoch 21, then we unfreeze from current_epoch 20. when current_epoch < 20, we use embeddings
         # i.e when current_epoch < unfreeze - 1
         # when encoder is frozen and intermediate embeddings are used 
-        if (trainer.current_epoch < (self.unfreeze_at_epoch -1 )) and self.use_embeddings: # unfreeze = 20 , current = 19, 
+        if (trainer.current_epoch < (self.unfreeze_at_epoch -1 )) and self.load_embeddings: # unfreeze = 20 , current = 19, 
             # copy existing embeddings from remote
-            print("============== start using intermediate embeddings ================" )
+            print("============== start loading intermediate embeddings ================" )
             os.makedirs(self.embeddings_temp_dir, exist_ok=True)
             """optionally move embeddings from remove to local at the start of training. NOT RECOMMENDED to do this in the callback as it causes NCCL unsync errors"""
             self.move_unique_files(Path(self.embeddings_source),Path(self.embeddings_temp_dir),verbose=True)
             sync_all_ranks()
             # instruct dataloader to load any precomputed embeddings
-            trainer.datamodule.load_embeddings = self.use_embeddings
+            trainer.datamodule.load_embeddings = self.load_embeddings
             trainer.datamodule.embeddings_source = self.embeddings_temp_dir
             trainer.datamodule.reset("fit")
+            self.save_embeddings = self.old_save_embeddings
 
 
     def on_test_start(self,trainer,pl_module):
@@ -146,16 +151,18 @@ class IntermediateEmbeddings(BasePredictionWriter):
     def on_validation_end(self,trainer, pl_module):
         self.on_train_end(trainer,pl_module)
 
-        """ stop using intermediate embeddings when unfreezing the encoder """
+        """stop using intermediate embeddings when unfreezing the encoder """
         if trainer.current_epoch == (self.unfreeze_at_epoch-1):
-            print("============== stop using intermediate embeddings ================" )
-            self.use_embeddings = False
-            self.save_embeddings = False
-            self.new_local_embedding = False
+            if pl_module.encoder not in ["uni","conch","titan"]:
+                print("============== stop loading intermediate embeddings ================" )
+                self.load_embeddings = False
+                self.save_embeddings = False
+                self.new_local_embedding = False
 
-            trainer.datamodule.load_embeddings = False
-            trainer.datamodule.verbose = False
-            trainer.datamodule.reset("fit")  
+                trainer.datamodule.load_embeddings = False
+                trainer.datamodule.verbose = False
+                trainer.datamodule.reset("fit")  
+                pl_module.embedding_computed = False
 
 
  
